@@ -1,0 +1,149 @@
+If you want the function to create an HttpResponse (suitable for a Django application) instead of saving files, here's the updated version. This function dynamically generates the response for different file types.
+
+Updated Function for HttpResponse
+
+import json
+import pandas as pd
+from docx import Document
+from io import BytesIO
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
+from django.http import HttpResponse
+
+def export(data, headers, file_type):
+    """
+    Export data to JSON, Excel, DOC, or PDF as an HTTP response.
+
+    Parameters:
+        data (list of dict): The data to export, where each dictionary represents a row.
+        headers (list): The column headers to export (must match keys in the dictionaries).
+        file_type (str): The type of file to export to ('json', 'excel', 'doc', 'pdf').
+
+    Returns:
+        HttpResponse: The HTTP response containing the file data.
+    """
+    # Filter the data to include only the specified headers
+    filtered_data = [{header: row.get(header, "") for header in headers} for row in data]
+    rows = [[row[header] for header in headers] for row in filtered_data]
+
+    if file_type.lower() == "json":
+        json_data = json.dumps(filtered_data, indent=4)
+        response = HttpResponse(json_data, content_type="application/json")
+        response['Content-Disposition'] = 'attachment; filename="data.json"'
+        return response
+
+    elif file_type.lower() == "excel":
+        output = BytesIO()
+        df = pd.DataFrame(filtered_data)
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            df.to_excel(writer, index=False, sheet_name="Sheet1")
+        response = HttpResponse(output.getvalue(), content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        response['Content-Disposition'] = 'attachment; filename="data.xlsx"'
+        return response
+
+    elif file_type.lower() == "doc":
+        output = BytesIO()
+        document = Document()
+        table = document.add_table(rows=1, cols=len(headers))
+        table.style = 'Table Grid'
+
+        # Add header row
+        for i, col in enumerate(headers):
+            table.rows[0].cells[i].text = col
+
+        # Add data rows
+        for row in rows:
+            cells = table.add_row().cells
+            for i, cell_data in enumerate(row):
+                cells[i].text = str(cell_data)
+
+        document.save(output)
+        response = HttpResponse(output.getvalue(), content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        response['Content-Disposition'] = 'attachment; filename="data.docx"'
+        return response
+
+    elif file_type.lower() == "pdf":
+        output = BytesIO()
+        c = canvas.Canvas(output, pagesize=letter)
+        width, height = letter
+        y = height - 50  # Start writing below the top margin
+
+        # Add header
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(50, y, " | ".join(headers))
+        y -= 20
+
+        # Add rows
+        c.setFont("Helvetica", 10)
+        for row in rows:
+            c.drawString(50, y, " | ".join(map(str, row)))
+            y -= 20
+            if y < 50:  # Check if we need a new page
+                c.showPage()
+                y = height - 50
+
+        c.save()
+        response = HttpResponse(output.getvalue(), content_type="application/pdf")
+        response['Content-Disposition'] = 'attachment; filename="data.pdf"'
+        return response
+
+    else:
+        return HttpResponse("Unsupported file type. Please use 'json', 'excel', 'doc', or 'pdf'.", status=400)
+
+How to Use in a Django View
+
+from django.shortcuts import render
+from .utils import export  # Assuming the function is in utils.py
+
+def export_data_view(request, file_type):
+    data = [
+        {"Name": "Alice", "Age": 30, "Department": "HR"},
+        {"Name": "Bob", "Age": 25, "Department": "Engineering"},
+        {"Name": "Charlie", "Age": 35, "Department": "Finance"}
+    ]
+    headers = ["Name", "Age", "Department"]
+
+    return export(data, headers, file_type)
+
+Key Changes
+
+1. HttpResponse Support:
+
+Instead of saving the file, the function now writes it to an in-memory buffer (BytesIO) and returns an HTTP response with the appropriate Content-Disposition header for downloading.
+
+2. Dynamic Content-Type: Each file type has its specific MIME type.
+
+3. Error Handling: If an unsupported file type is provided, it returns an HTTP 400 response.
+
+File Types Supported
+
+JSON: application/json
+
+Excel: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+
+DOC: application/vnd.openxmlformats-officedocument.wordprocessingml.document
+
+PDF: application/pdf
+
+Example URL Configuration
+
+from django.urls import path
+from .views import export_data_view
+
+urlpatterns = [
+    path('export/<str:file_type>/', export_data_view, name='export_data'),
+]
+
+Example Usage in Browser
+
+Access the following URLs to download files:
+
+/export/json/
+
+/export/excel/
+
+/export/doc/
+
+/export/pdf/
+
+This approach streams the generated file to the client without saving it to disk.
