@@ -1,149 +1,93 @@
-If you want the function to create an HttpResponse (suitable for a Django application) instead of saving files, here's the updated version. This function dynamically generates the response for different file types.
-
-Updated Function for HttpResponse
-
-import json
-import pandas as pd
-from docx import Document
+import os
+import zipfile
 from io import BytesIO
-from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen import canvas
 from django.http import HttpResponse
+import openpyxl
+from openpyxl.utils import get_column_letter
 
-def export(data, headers, file_type):
+
+def create_excel_file(data, headers):
     """
-    Export data to JSON, Excel, DOC, or PDF as an HTTP response.
-
-    Parameters:
-        data (list of dict): The data to export, where each dictionary represents a row.
-        headers (list): The column headers to export (must match keys in the dictionaries).
-        file_type (str): The type of file to export to ('json', 'excel', 'doc', 'pdf').
-
-    Returns:
-        HttpResponse: The HTTP response containing the file data.
+    Creates an Excel file from a dictionary.
+    :param data: List of dictionaries containing the data.
+    :param headers: List of headers for the Excel columns.
+    :return: BytesIO object containing the Excel file.
     """
-    # Filter the data to include only the specified headers
-    filtered_data = [{header: row.get(header, "") for header in headers} for row in data]
-    rows = [[row[header] for header in headers] for row in filtered_data]
+    # Create a workbook and a worksheet
+    workbook = openpyxl.Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Data"
 
-    if file_type.lower() == "json":
-        json_data = json.dumps(filtered_data, indent=4)
-        response = HttpResponse(json_data, content_type="application/json")
-        response['Content-Disposition'] = 'attachment; filename="data.json"'
-        return response
+    # Add headers to the Excel file
+    for col_num, header in enumerate(headers, start=1):
+        worksheet.cell(row=1, column=col_num, value=header)
 
-    elif file_type.lower() == "excel":
-        output = BytesIO()
-        df = pd.DataFrame(filtered_data)
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df.to_excel(writer, index=False, sheet_name="Sheet1")
-        response = HttpResponse(output.getvalue(), content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        response['Content-Disposition'] = 'attachment; filename="data.xlsx"'
-        return response
+    # Add data to the Excel file
+    for row_num, row_data in enumerate(data, start=2):
+        for col_num, header in enumerate(headers, start=1):
+            worksheet.cell(row=row_num, column=col_num, value=row_data.get(header, ""))
 
-    elif file_type.lower() == "doc":
-        output = BytesIO()
-        document = Document()
-        table = document.add_table(rows=1, cols=len(headers))
-        table.style = 'Table Grid'
+    # Save the workbook to a BytesIO object
+    excel_buffer = BytesIO()
+    workbook.save(excel_buffer)
+    excel_buffer.seek(0)
+    return excel_buffer
 
-        # Add header row
-        for i, col in enumerate(headers):
-            table.rows[0].cells[i].text = col
 
-        # Add data rows
-        for row in rows:
-            cells = table.add_row().cells
-            for i, cell_data in enumerate(row):
-                cells[i].text = str(cell_data)
+def create_zip():
+    """Creates an in-memory zip file."""
+    zip_buffer = BytesIO()
+    zip_file = zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED)
+    return zip_file, zip_buffer
 
-        document.save(output)
-        response = HttpResponse(output.getvalue(), content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-        response['Content-Disposition'] = 'attachment; filename="data.docx"'
-        return response
 
-    elif file_type.lower() == "pdf":
-        output = BytesIO()
-        c = canvas.Canvas(output, pagesize=letter)
-        width, height = letter
-        y = height - 50  # Start writing below the top margin
+def add_file_to_zip(zip_file, file_buffer, folder_name, file_name):
+    """
+    Adds a file to a folder in the zip file.
+    :param zip_file: The zip file object.
+    :param file_buffer: BytesIO object containing the file data.
+    :param folder_name: Folder inside the zip to add the file.
+    :param file_name: Name of the file to be added.
+    """
+    if folder_name and not folder_name.endswith("/"):
+        folder_name += "/"
+    archive_name = f"{folder_name}{file_name}"
+    zip_file.writestr(archive_name, file_buffer.getvalue())
 
-        # Add header
-        c.setFont("Helvetica-Bold", 12)
-        c.drawString(50, y, " | ".join(headers))
-        y -= 20
 
-        # Add rows
-        c.setFont("Helvetica", 10)
-        for row in rows:
-            c.drawString(50, y, " | ".join(map(str, row)))
-            y -= 20
-            if y < 50:  # Check if we need a new page
-                c.showPage()
-                y = height - 50
+def get_zip_response(zip_buffer, zip_name="archive.zip"):
+    """
+    Returns the zip file as an HTTP response.
+    :param zip_buffer: The BytesIO buffer containing the zip data.
+    :param zip_name: The name of the zip file to be downloaded.
+    """
+    zip_buffer.seek(0)
+    response = HttpResponse(zip_buffer, content_type="application/zip")
+    response["Content-Disposition"] = f'attachment; filename="{zip_name}"'
+    return response
 
-        c.save()
-        response = HttpResponse(output.getvalue(), content_type="application/pdf")
-        response['Content-Disposition'] = 'attachment; filename="data.pdf"'
-        return response
 
-    else:
-        return HttpResponse("Unsupported file type. Please use 'json', 'excel', 'doc', or 'pdf'.", status=400)
-
-How to Use in a Django View
-
-from django.shortcuts import render
-from .utils import export  # Assuming the function is in utils.py
-
-def export_data_view(request, file_type):
+# Usage Example
+def download_zip_with_excel(request):
+    # Sample data and headers
     data = [
         {"Name": "Alice", "Age": 30, "Department": "HR"},
-        {"Name": "Bob", "Age": 25, "Department": "Engineering"},
-        {"Name": "Charlie", "Age": 35, "Department": "Finance"}
+        {"Name": "Bob", "Age": 25, "Department": "Finance"},
+        {"Name": "Charlie", "Age": 35, "Department": "IT"},
     ]
     headers = ["Name", "Age", "Department"]
 
-    return export(data, headers, file_type)
+    # Step 1: Create an Excel file
+    excel_buffer = create_excel_file(data, headers)
 
-Key Changes
+    # Step 2: Create a zip file
+    zip_file, zip_buffer = create_zip()
 
-1. HttpResponse Support:
+    # Step 3: Add the Excel file to a folder in the zip
+    add_file_to_zip(zip_file, excel_buffer, "reports", "employee_data.xlsx")
 
-Instead of saving the file, the function now writes it to an in-memory buffer (BytesIO) and returns an HTTP response with the appropriate Content-Disposition header for downloading.
+    # Step 4: Close the zip file
+    zip_file.close()
 
-2. Dynamic Content-Type: Each file type has its specific MIME type.
-
-3. Error Handling: If an unsupported file type is provided, it returns an HTTP 400 response.
-
-File Types Supported
-
-JSON: application/json
-
-Excel: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
-
-DOC: application/vnd.openxmlformats-officedocument.wordprocessingml.document
-
-PDF: application/pdf
-
-Example URL Configuration
-
-from django.urls import path
-from .views import export_data_view
-
-urlpatterns = [
-    path('export/<str:file_type>/', export_data_view, name='export_data'),
-]
-
-Example Usage in Browser
-
-Access the following URLs to download files:
-
-/export/json/
-
-/export/excel/
-
-/export/doc/
-
-/export/pdf/
-
-This approach streams the generated file to the client without saving it to disk.
+    # Step 5: Return the zip file as an HTTP response
+    return get_zip_response(zip_buffer, "data_with_excel.zip")
